@@ -53,5 +53,8 @@ func TestDialLogin(t *testing.T) {
 	if resp == nil {
 		t.Fatal("response is nil")
 	}
+	if resp.Error != "" {
+		t.Fatal("response error:", resp.Error)
+	}
 
 }

@@ -5,6 +5,7 @@ go 1.23.0
 replace github.com/runeharvest/gserver => ./
 
 require (
+	github.com/BurntSushi/toml v1.5.0
 	google.golang.org/grpc v1.75.0
 	google.golang.org/protobuf v1.36.8
 )
