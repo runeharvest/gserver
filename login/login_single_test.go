@@ -5,6 +5,7 @@ import (
 	"net"
 	"testing"
 
+	"github.com/runeharvest/gserver/config"
 	"github.com/runeharvest/gserver/login/storage/memory"
 	netlisten "github.com/runeharvest/gserver/net"
 	netdialgrpc "github.com/runeharvest/gserver/net/dial/grpc"
@@ -15,6 +16,10 @@ import (
 )
 
 func TestSingleDialLogin(t *testing.T) {
+	err := config.SetConfig(defaultLoginConfig())
+	if err != nil {
+		t.Fatal("set config:", err)
+	}
 	memoryStorage, err := memory.NewMemoryStorage()
 	if err != nil {
 		t.Fatal("new memory storage:", err)
@@ -23,7 +28,10 @@ func TestSingleDialLogin(t *testing.T) {
 	if err != nil {
 		t.Fatal("new login service:", err)
 	}
-
+	err = config.SetConfig(defaultLoginConfig())
+	if err != nil {
+		t.Fatal("set config:", err)
+	}
 	gs := grpc.NewServer()
 
 	grpcListen, err := netlistengrpc.NewGrpcNetwork(gs)

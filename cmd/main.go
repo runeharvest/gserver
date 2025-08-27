@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 
+	"github.com/runeharvest/gserver/config"
 	"github.com/runeharvest/gserver/login"
 	"github.com/runeharvest/gserver/login/storage/memory"
 	netlisten "github.com/runeharvest/gserver/net"
@@ -21,10 +22,17 @@ func main() {
 }
 
 func run() error {
+
+	err := config.MultiLoad("config", "login")
+	if err != nil {
+		return fmt.Errorf("multiload: %w", err)
+	}
+
 	memoryStorage, err := memory.NewMemoryStorage()
 	if err != nil {
 		return fmt.Errorf("new memory storage: %w", err)
 	}
+
 	loginService, err := login.NewLoginService(memoryStorage)
 	if err != nil {
 		return fmt.Errorf("new login service: %w", err)
