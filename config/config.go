@@ -3,6 +3,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,9 +35,10 @@ func MultiLoad(dir string, name string) error {
 	_, err = os.Stat(path)
 	if err == nil {
 		err = Load(path)
-		if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("load %s.override.toml: %w", name, err)
 		}
+
 	}
 	return nil
 }
@@ -44,8 +46,6 @@ func MultiLoad(dir string, name string) error {
 // Load decodes a TOML file and merges it into our global configData map.
 // This function is write-locked, as it modifies the global state.
 func Load(filePath string) error {
-	mutex.Lock()
-	defer mutex.Unlock()
 
 	content, err := os.ReadFile(filePath)
 	if err != nil {
@@ -53,19 +53,23 @@ func Load(filePath string) error {
 	}
 
 	newData := make(map[string]any)
-	if _, err := toml.Decode(string(content), &newData); err != nil {
+	_, err = toml.Decode(string(content), &newData)
+	if err != nil {
 		return fmt.Errorf("decode TOML file: %w", err)
 	}
+
+	err = sanitizeMap(newData)
+	if err != nil {
+		return fmt.Errorf("sanitize config from %s: %w", filePath, err)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
 
 	if configData == nil {
 		configData = newData
 		return nil
 	}
-	for k, v := range newData {
-		if !isSupportedType(v) {
-			return fmt.Errorf("unsupported value type for key '%s': %T", k, v)
-		}
-	}
+	mergeMaps(configData, newData)
 
 	return nil
 }
@@ -78,13 +82,13 @@ func Close() {
 
 // Set allows you to manually set the configuration data (for testing).
 func SetConfig(data map[string]any) error {
+	err := sanitizeMap(data)
+	if err != nil {
+		return fmt.Errorf("sanitize: %w", err)
+	}
 	mutex.Lock()
 	defer mutex.Unlock()
 	configData = data
-	err := sanitize()
-	if err != nil {
-		return err
-	}
 
 	return nil
 
@@ -92,9 +96,11 @@ func SetConfig(data map[string]any) error {
 
 // SetValue allows you to manually set a specific configuration value
 func SetValue(category, key string, value any) error {
-	if !isSupportedType(value) {
-		return fmt.Errorf("unsupported value type for key '%s.%s': %T", category, key, value)
+	saniziedValue, err := sanitizeValue(value)
+	if err != nil {
+		return fmt.Errorf("sanitize: %w", err)
 	}
+
 	mutex.Lock()
 	defer mutex.Unlock()
 
@@ -114,15 +120,13 @@ func SetValue(category, key string, value any) error {
 		configData[category] = catMap
 	}
 
-	err := sanitize()
-	if err != nil {
-		return err
-	}
+	catMap[key] = saniziedValue
 
 	return nil
 }
 
-// value is an internal helper to safely access nested values.
+// value is an internal helper to safely access nested values without locking.
+// The caller is responsible for locking.
 func value(category, key string) (any, error) {
 	if configData == nil {
 		return nil, fmt.Errorf("config not loaded")
@@ -381,55 +385,86 @@ func ValueSliceFloat(category, key string) []float64 {
 	return val
 }
 
-func isSupportedType(value any) bool {
-	switch value.(type) {
-	case string, bool, int64, int, float64, []string, []bool, []int64, []float64:
-		return true
+func mergeMaps(dest, src map[string]any) {
+	for key, srcVal := range src {
+		if destVal, ok := dest[key]; ok {
+			if destMap, ok := destVal.(map[string]any); ok {
+				if srcMap, ok := srcVal.(map[string]any); ok {
+					mergeMaps(destMap, srcMap)
+					continue
+				}
+			}
+		}
+		dest[key] = srcVal
 	}
-	return false
 }
 
-// sanitize reigns in weird types and validates the config data.
-
-func sanitize() error {
-	for catKey, catVal := range configData {
+// sanitizeMap reigns in weird types and validates the config data in place.
+func sanitizeMap(data map[string]any) error {
+	for catKey, catVal := range data {
 		catMap, ok := catVal.(map[string]any)
 		if !ok {
-			return fmt.Errorf("category '%s' is not a table", catKey)
+			sanitizedVal, err := sanitizeValue(catVal)
+			if err != nil {
+				return fmt.Errorf("key '%s': %w", catKey, err)
+			}
+			data[catKey] = sanitizedVal
+			continue
 		}
 		for key, val := range catMap {
-			switch retVal := val.(type) {
-			case int:
-				val = int64(retVal)
-				catMap[key] = val
-			case int32:
-				val = int64(retVal)
-				catMap[key] = val
-			case float32:
-				val = float64(retVal)
-				catMap[key] = val
-			case []int:
-				intSlice := val.([]int)
-				int64Slice := make([]int64, len(intSlice))
-				for i, v := range intSlice {
-					int64Slice[i] = int64(v)
-				}
-				val = int64Slice
-				catMap[key] = val
-			case []int32:
-				intSlice := val.([]int32)
-				int64Slice := make([]int64, len(intSlice))
-				for i, v := range intSlice {
-					int64Slice[i] = int64(v)
-				}
-				val = int64Slice
-				catMap[key] = val
+			sanitizedVal, err := sanitizeValue(val)
+			if err != nil {
+				return fmt.Errorf("key '%s.%s': %w", catKey, key, err)
 			}
-
-			if !isSupportedType(val) {
-				return fmt.Errorf("unsupported value type for key '%s.%s': %T", catKey, key, val)
-			}
+			catMap[key] = sanitizedVal
 		}
 	}
 	return nil
+}
+
+// sanitizeValue converts numeric types to a standard format (int64, float64).
+func sanitizeValue(val any) (any, error) {
+	switch v := val.(type) {
+	case int:
+		return int64(v), nil
+	case int32:
+		return int64(v), nil
+	case float32:
+		return float64(v), nil
+	case []any: // TOML decodes arrays as []any
+		// Create a new slice of the determined type
+		if len(v) == 0 {
+			return v, nil // Return empty slice as is
+		}
+		// Determine type from first element
+		switch v[0].(type) {
+		case int64:
+			intSlice := make([]int64, len(v))
+			for i, item := range v {
+				if concrete, ok := item.(int64); ok {
+					intSlice[i] = concrete
+				} else {
+					return nil, fmt.Errorf("mixed types in integer array")
+				}
+			}
+			return intSlice, nil
+		case string:
+			strSlice := make([]string, len(v))
+			for i, item := range v {
+				if concrete, ok := item.(string); ok {
+					strSlice[i] = concrete
+				} else {
+					return nil, fmt.Errorf("mixed types in string array")
+				}
+			}
+			return strSlice, nil
+		// Add cases for bool, float64 etc. as needed
+		default:
+			return val, nil // Return as []any if type is not specifically handled
+		}
+	// These types are already in the desired format
+	case string, bool, int64, float64, []string, []bool, []int64, []float64:
+		return val, nil
+	}
+	return nil, fmt.Errorf("unsupported type: %T", val)
 }
