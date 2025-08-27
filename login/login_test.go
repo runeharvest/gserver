@@ -52,7 +52,10 @@ func TestDialLogin(t *testing.T) {
 		t.Fatal("new net dial service:", err)
 	}
 
-	resp, err := netDial.LoginVerify(context.Background(), &loginv1.LoginVerifyRequest{})
+	resp, err := netDial.LoginVerify(context.Background(), &loginv1.LoginVerifyRequest{
+		Username: "testuser",
+		Password: "testpassword",
+	})
 	if err != nil {
 		t.Fatal("login verify:", err)
 	}
@@ -84,6 +87,7 @@ func defaultLoginConfig() map[string]any {
 			"is_naming_service_used":      false,
 			"is_aes_used":                 false,
 			"shard_id":                    1,
+			"is_login_verbose_to_client":  true,
 		},
 	}
 }

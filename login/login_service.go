@@ -9,6 +9,7 @@ import (
 	"github.com/runeharvest/gserver/login/storage"
 	entityv1 "github.com/runeharvest/gserver/proto/rh/entity/v1"
 	loginv1 "github.com/runeharvest/gserver/proto/rh/login/v1"
+	"github.com/runeharvest/gserver/stringfmt"
 )
 
 // LoginService is the use case handler for login-related operations.
@@ -29,42 +30,89 @@ func NewLoginService(storage storage.Storager) (*LoginService, error) {
 	return e, nil
 }
 
-func (e *LoginService) LoginVerify(ctx context.Context, in *loginv1.LoginVerifyRequest) (*loginv1.LoginVerifyResponse, error) {
+func (e *LoginService) LoginVerify(ctx context.Context, req *loginv1.LoginVerifyRequest) (*loginv1.LoginVerifyResponse, error) {
 	resp := &loginv1.LoginVerifyResponse{}
 
-	user, err := e.storager.UserByLogin(ctx, in.Username)
+	isLoginVerboseToClient := config.ValueBool("login", "is_login_verbose_to_client")
+
+	if req.Username == "" {
+		resp.Error = "Username is empty"
+		return resp, nil
+	}
+	if len(req.Username) > 16 {
+		resp.Error = "Username is too long"
+		return resp, nil
+	}
+	if req.Password == "" {
+		resp.Error = "Password is empty"
+		return resp, nil
+	}
+	if len(req.Password) > 16 {
+		resp.Error = "Password is too long"
+		return resp, nil
+	}
+
+	user, err := e.storager.UserByLogin(ctx, req.Username)
 	if err != nil {
-		return nil, fmt.Errorf("user by login: %w", err)
+		resp.Error = "Failed to login for an unknown reason"
+		if isLoginVerboseToClient {
+			resp.Error = "Failed to create user: " + err.Error()
+		}
+		return resp, nil
 	}
 
 	if user == nil {
 		isUnknownUserAllowed := config.ValueBool("login", "is_unknown_user_allowed")
 		if !isUnknownUserAllowed {
-			resp.Error = fmt.Sprintf("Login '%s' doesn't exist", in.Username)
+			resp.Error = "Invalid username or password"
+			if isLoginVerboseToClient {
+				resp.Error = "User not found and unknown users are not allowed"
+			}
 			return resp, nil
 		}
 
 		isUserCreationAllowed := config.ValueBool("login", "is_user_creation_allowed")
 		if !isUserCreationAllowed {
-			resp.Error = fmt.Sprintf("Login '%s' doesn't exist", in.Username)
+			resp.Error = "Invalid username or password"
+			if isLoginVerboseToClient {
+				resp.Error = "User not found and user creation is not allowed"
+			}
+			return resp, nil
+		}
+
+		err := stringfmt.UsernameValidate(req.Username)
+		if err != nil {
+			resp.Error = "Username is invalid: " + err.Error()
+			return resp, nil
+		}
+
+		err = stringfmt.PasswordValidate(req.Password)
+		if err != nil {
+			resp.Error = "Password is invalid: " + err.Error()
 			return resp, nil
 		}
 
 		newUser := &entityv1.User{
-			Username: in.Username,
-			Password: in.Password,
+			Username: req.Username,
+			Password: req.Password,
 			State:    entityv1.UserState_OFFLINE,
 		}
 		user, err = e.storager.UserCreate(ctx, newUser)
 		if err != nil {
-			resp.Error = "Failed to create user"
+			resp.Error = "User creation failed for an unknown reason"
+			if isLoginVerboseToClient {
+				resp.Error = "Failed to create user: " + err.Error()
+			}
 			return resp, nil
 		}
-		slog.Info("User created", "username", in.Username, "application", in.Application)
+		slog.Info("User created", "username", req.Username, "application", req.Application)
 	}
 
-	if user.Password != in.Password {
-		resp.Error = "Bad password"
+	if user.Password != req.Password {
+		resp.Error = "Invalid username or password"
+		if isLoginVerboseToClient {
+			resp.Error = "Password is incorrect"
+		}
 		return resp, nil
 	}
 
@@ -74,12 +122,12 @@ func (e *LoginService) LoginVerify(ctx context.Context, in *loginv1.LoginVerifyR
 		// msgout.serial(uid);
 		// CUnifiedNetwork::getInstance()->send("WS", msgout);
 
-		// reason = toString("User '%s' is already connected", login.toUtf8().c_str());
+		// reason = toString("User '%s' is already connected", req.toUtf8().c_str());
 		// CMessage vplMsgout("VLP");
 		// vplMsgout.serial(reason);
 		// netbase.send(vplMsgout, from);
 		// return
-		resp.Error = fmt.Sprintf("User '%s' is already connected", in.Username)
+		resp.Error = fmt.Sprintf("User '%s' is already connected", req.Username)
 		return resp, nil
 	}
 
@@ -92,7 +140,7 @@ func (e *LoginService) LoginVerify(ctx context.Context, in *loginv1.LoginVerifyR
 		return resp, nil
 	}
 
-	shards, err := e.storager.ShardsByClientApplication(ctx, in.Application)
+	shards, err := e.storager.ShardsByClientApplication(ctx, req.Application)
 	if err != nil {
 		resp.Error = "Failed to get shards"
 		return resp, nil
@@ -131,6 +179,7 @@ func configValidate() error {
 		{"login", "force_database_reconnection", "string"},
 		{"login", "is_naming_service_used", "bool"},
 		{"login", "is_aes_used", "bool"},
+		{"login", "is_login_verbose_to_client", "bool"},
 		{"login", "shard_id", "int"},
 	}
 

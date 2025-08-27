@@ -73,12 +73,19 @@ func TestSingleDialLogin(t *testing.T) {
 		t.Fatal("new net dial service:", err)
 	}
 
-	resp, err := netDial.LoginVerify(context.Background(), &loginv1.LoginVerifyRequest{})
+	resp, err := netDial.LoginVerify(context.Background(), &loginv1.LoginVerifyRequest{
+		Username: "testuser",
+		Password: "testpassword",
+	})
 	if err != nil {
 		t.Fatal("login verify:", err)
 	}
 	if resp == nil {
 		t.Fatal("login verify: response is nil")
+	}
+
+	if resp.Error != "" {
+		t.Fatal("response error:", resp.Error)
 	}
 
 }
